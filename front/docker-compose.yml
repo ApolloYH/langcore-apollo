@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: langcore-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: langcore
+      POSTGRES_USER: langcore
+      POSTGRES_PASSWORD: langcore_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - langcore-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langcore -d langcore"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  langcore-postgres-data:

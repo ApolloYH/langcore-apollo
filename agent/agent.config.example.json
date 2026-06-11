@@ -1,0 +1,41 @@
+{
+  "workspaceRoot": ".",
+  "maxTurns": 20,
+  "context": {
+    "maxChars": 120000,
+    "summaryChars": 12000
+  },
+  "permissions": {
+    "mode": "ask",
+    "autoApproveReadOnly": true
+  },
+  "skills": {
+    "directories": ["./skills", "./src/skills"]
+  },
+  "mcpServers": {
+    "example": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-everything"]
+    }
+  },
+  "workers": [
+    {
+      "name": "general-purpose",
+      "whenToUse": "Complex research, broad codebase exploration, and multi-step investigation when the right files or answer are not obvious.",
+      "tools": ["*"],
+      "instructions": "You are a general-purpose subagent. Search broadly, investigate thoroughly, and return a concise report with key findings and evidence."
+    },
+    {
+      "name": "coder",
+      "whenToUse": "Focused implementation work after the supervisor has identified the files, goal, and expected change.",
+      "tools": ["read_file", "write_file", "list_files", "shell_exec", "git_diff"],
+      "instructions": "You are a focused implementation worker. Make concrete code changes and report concise results."
+    },
+    {
+      "name": "reviewer",
+      "whenToUse": "Independent review of code changes, designs, migrations, or risky implementation decisions.",
+      "tools": ["read_file", "list_files", "git_diff", "shell_exec"],
+      "instructions": "You are a code review worker. Prioritize bugs, regressions, security risks, and missing tests."
+    }
+  ]
+}

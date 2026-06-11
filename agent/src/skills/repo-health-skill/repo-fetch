@@ -1,0 +1,307 @@
+#!/usr/bin/env python3
+import argparse
+import datetime as dt
+import json
+import os
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+VERSION = "1.0.0"
+
+
+def load_env_file():
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if not os.path.exists(env_path):
+        return
+    try:
+        with open(env_path, "r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except OSError as exc:
+        fail("env_error", "could not read .env file", {"error": str(exc)})
+
+
+def now_iso():
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def fail(code, message, details=None, exit_code=1):
+    payload = {
+        "ok": False,
+        "error": {
+            "code": code,
+            "message": message,
+            "details": details or {},
+        },
+    }
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True), file=sys.stderr)
+    raise SystemExit(exit_code)
+
+
+def parse_owner_repo(value):
+    cleaned = value.strip()
+    if "github.com/" in cleaned:
+        parsed = urllib.parse.urlparse(cleaned)
+        cleaned = parsed.path.strip("/")
+    parts = cleaned.strip("/").split("/")
+    if len(parts) != 2 or not all(parts):
+        fail("invalid_arguments", "repo must be in owner/repo form", {"value": value})
+    return parts[0], parts[1]
+
+
+def parse_include(values, include_issues, include_commits):
+    selected = set()
+    for value in values or []:
+        for item in value.split(","):
+            item = item.strip().lower()
+            if not item:
+                continue
+            if item not in {"issues", "commits"}:
+                fail("invalid_arguments", "include must contain only issues or commits", {"value": item})
+            selected.add(item)
+    if include_issues:
+        selected.add("issues")
+    if include_commits:
+        selected.add("commits")
+    return sorted(selected)
+
+
+def request_json(url):
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "repo-health-skill/repo-fetch",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            charset = response.headers.get_content_charset() or "utf-8"
+            return json.loads(response.read().decode(charset))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        message = body
+        try:
+            parsed = json.loads(body)
+            message = parsed.get("message", body)
+        except json.JSONDecodeError:
+            pass
+        fail("github_http_error", "GitHub API request failed", {"url": url, "status": exc.code, "message": message})
+    except urllib.error.URLError as exc:
+        fail("network_error", "GitHub API request failed", {"url": url, "reason": str(exc.reason)})
+    except json.JSONDecodeError as exc:
+        fail("invalid_response", "GitHub API returned invalid JSON", {"url": url, "error": str(exc)})
+
+
+def build_url(api_url, path, params=None):
+    base = api_url.rstrip("/")
+    query = urllib.parse.urlencode(params or {})
+    return f"{base}{path}" + (f"?{query}" if query else "")
+
+
+def compact_repo(repo):
+    return {
+        "id": repo.get("id"),
+        "name": repo.get("name"),
+        "full_name": repo.get("full_name"),
+        "description": repo.get("description"),
+        "private": repo.get("private"),
+        "html_url": repo.get("html_url"),
+        "default_branch": repo.get("default_branch"),
+        "language": repo.get("language"),
+        "topics": repo.get("topics", []),
+        "stargazers_count": repo.get("stargazers_count"),
+        "watchers_count": repo.get("watchers_count"),
+        "forks_count": repo.get("forks_count"),
+        "open_issues_count": repo.get("open_issues_count"),
+        "license": repo.get("license", {}).get("spdx_id") if repo.get("license") else None,
+        "archived": repo.get("archived"),
+        "disabled": repo.get("disabled"),
+        "created_at": repo.get("created_at"),
+        "updated_at": repo.get("updated_at"),
+        "pushed_at": repo.get("pushed_at"),
+        "owner": {
+            "login": (repo.get("owner") or {}).get("login"),
+            "type": (repo.get("owner") or {}).get("type"),
+        },
+    }
+
+
+def compact_search_repo(repo):
+    compacted = compact_repo(repo)
+    compacted.update(
+        {
+            "score": repo.get("score"),
+            "size": repo.get("size"),
+            "homepage": repo.get("homepage"),
+            "has_issues": repo.get("has_issues"),
+            "has_projects": repo.get("has_projects"),
+            "has_wiki": repo.get("has_wiki"),
+        }
+    )
+    return compacted
+
+
+def compact_issue(issue):
+    return {
+        "id": issue.get("id"),
+        "number": issue.get("number"),
+        "title": issue.get("title"),
+        "state": issue.get("state"),
+        "html_url": issue.get("html_url"),
+        "labels": [label.get("name") for label in issue.get("labels", []) if label.get("name")],
+        "comments": issue.get("comments"),
+        "created_at": issue.get("created_at"),
+        "updated_at": issue.get("updated_at"),
+        "closed_at": issue.get("closed_at"),
+        "user": {
+            "login": (issue.get("user") or {}).get("login"),
+            "type": (issue.get("user") or {}).get("type"),
+        },
+    }
+
+
+def compact_commit(commit):
+    commit_data = commit.get("commit") or {}
+    author_data = commit_data.get("author") or {}
+    return {
+        "sha": commit.get("sha"),
+        "html_url": commit.get("html_url"),
+        "message": (commit_data.get("message") or "").splitlines()[0],
+        "date": author_data.get("date"),
+        "author": {
+            "name": author_data.get("name"),
+            "login": (commit.get("author") or {}).get("login"),
+        },
+    }
+
+
+def fetch_paged(api_url, path, per_page, max_pages, extra_params=None):
+    items = []
+    for page in range(1, max_pages + 1):
+        params = {"per_page": per_page, "page": page}
+        params.update(extra_params or {})
+        batch = request_json(build_url(api_url, path, params))
+        if not isinstance(batch, list):
+            fail("invalid_response", "GitHub API returned a non-list page", {"path": path, "page": page})
+        items.extend(batch)
+        if len(batch) < per_page:
+            break
+    return items
+
+
+def main():
+    load_env_file()
+
+    parser = argparse.ArgumentParser(description="Fetch GitHub repository or repository-search data as JSON.")
+    parser.add_argument("repo", nargs="?", help="Repository in owner/repo form or a GitHub repository URL.")
+    parser.add_argument("--search", help="GitHub repository search query.")
+    parser.add_argument("--include", action="append", help="Comma-separated optional datasets: issues,commits.")
+    parser.add_argument("--issues", action="store_true", help="Include open issues. Pull requests are filtered out.")
+    parser.add_argument("--commits", action="store_true", help="Include recent commits.")
+    parser.add_argument("--per-page", type=int, default=30, help="GitHub page size, 1-100. Default: 30.")
+    parser.add_argument("--max-pages", type=int, default=1, help="Maximum pages per optional dataset. Default: 1.")
+    args = parser.parse_args()
+
+    if args.per_page < 1 or args.per_page > 100:
+        fail("invalid_arguments", "--per-page must be between 1 and 100", {"per_page": args.per_page})
+    if args.max_pages < 1:
+        fail("invalid_arguments", "--max-pages must be at least 1", {"max_pages": args.max_pages})
+    if bool(args.repo) == bool(args.search):
+        fail("invalid_arguments", "provide exactly one of repo or --search")
+
+    include = parse_include(args.include, args.issues, args.commits)
+    api_url = os.environ.get("GITHUB_API_URL", "https://api.github.com")
+
+    if args.search:
+        if include:
+            fail("invalid_arguments", "--include, --issues, and --commits require a concrete repository")
+        search_json = request_json(
+            build_url(
+                api_url,
+                "/search/repositories",
+                {
+                    "q": args.search,
+                    "sort": "stars",
+                    "order": "desc",
+                    "per_page": args.per_page,
+                    "page": 1,
+                },
+            )
+        )
+        items = search_json.get("items")
+        if not isinstance(items, list):
+            fail("invalid_response", "GitHub search returned invalid results")
+        payload = {
+            "ok": True,
+            "source": "repo-fetch",
+            "version": VERSION,
+            "fetched_at": now_iso(),
+            "mode": "search",
+            "input": {
+                "query": args.search,
+                "per_page": args.per_page,
+                "max_pages": 1,
+            },
+            "search": {
+                "query": args.search,
+                "total_count": search_json.get("total_count"),
+                "incomplete_results": search_json.get("incomplete_results"),
+                "items": [compact_search_repo(item) for item in items],
+            },
+            "data": {},
+        }
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return
+
+    owner, repo = parse_owner_repo(args.repo)
+    repo_json = request_json(build_url(api_url, f"/repos/{owner}/{repo}"))
+    data = {}
+
+    if "issues" in include:
+        raw_issues = fetch_paged(
+            api_url,
+            f"/repos/{owner}/{repo}/issues",
+            args.per_page,
+            args.max_pages,
+            {"state": "all", "sort": "updated", "direction": "desc"},
+        )
+        data["issues"] = [compact_issue(item) for item in raw_issues if "pull_request" not in item]
+
+    if "commits" in include:
+        raw_commits = fetch_paged(api_url, f"/repos/{owner}/{repo}/commits", args.per_page, args.max_pages)
+        data["commits"] = [compact_commit(item) for item in raw_commits]
+
+    payload = {
+        "ok": True,
+        "source": "repo-fetch",
+        "version": VERSION,
+        "fetched_at": now_iso(),
+        "mode": "repository",
+        "input": {
+            "owner": owner,
+            "repo": repo,
+            "include": include,
+            "per_page": args.per_page,
+            "max_pages": args.max_pages,
+        },
+        "repository": compact_repo(repo_json),
+        "data": data,
+    }
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()
