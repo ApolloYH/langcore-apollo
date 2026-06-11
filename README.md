@@ -16,9 +16,22 @@ cd agent
 npm run dev -- --config agent.config.example.json
 ```
 
-Run the web frontend:
+Run the web frontend from the project root:
 
 ```bash
 cd front
 npm run dev
+```
+
+Then open:
+
+```text
+http://localhost:3000
+```
+
+If port `3000` is already in use, run it on another port:
+
+```bash
+cd front
+npm run dev -- --port 3011
 ```
