@@ -1,6 +1,6 @@
 {
   "workspaceRoot": ".",
-  "maxTurns": 20,
+  "maxTurns": 40,
   "context": {
     "maxChars": 120000,
     "summaryChars": 12000

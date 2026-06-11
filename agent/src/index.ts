@@ -242,6 +242,7 @@ function updateRuntimeStatus(event: TraceEvent): void {
     case "llm_request":
       runtimeStatus = "thinking";
       break;
+    case "llm_tool_delta":
     case "tool_call":
     case "worker_start":
     case "worker_progress":
@@ -264,6 +265,9 @@ function updateLiveStatus(event: TraceEvent, enabled: boolean): void {
   switch (event.type) {
     case "llm_request":
       startLiveStatus(runningWorkerCount > 0 ? formatRunningWorkers() : "Thinking");
+      break;
+    case "llm_tool_delta":
+      startLiveStatus(`Preparing ${event.tool ?? "tool"} input`);
       break;
     case "tool_call":
       startLiveStatus(`Using ${event.tool}`);

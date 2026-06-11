@@ -21,6 +21,7 @@ export class AnthropicClient {
     tools: AnthropicTool[];
     stream?: boolean;
     onTextDelta?: (text: string) => void;
+    onToolInputDelta?: (event: { bytes: number; tool?: string }) => void;
   }): Promise<AnthropicResponse> {
     const url = `${this.config.baseUrl.replace(/\/$/, "")}/v1/messages`;
     const response = await fetch(url, {
@@ -47,13 +48,17 @@ export class AnthropicClient {
       throw new Error(`Anthropic API error ${response.status}: ${errorText}`);
     }
     if (input.stream) {
-      return readStreamingResponse(response, input.onTextDelta);
+      return readStreamingResponse(response, input.onTextDelta, input.onToolInputDelta);
     }
     return (await response.json()) as AnthropicResponse;
   }
 }
 
-async function readStreamingResponse(response: Response, onTextDelta?: (text: string) => void): Promise<AnthropicResponse> {
+async function readStreamingResponse(
+  response: Response,
+  onTextDelta?: (text: string) => void,
+  onToolInputDelta?: (event: { bytes: number; tool?: string }) => void,
+): Promise<AnthropicResponse> {
   if (!response.body) throw new Error("Anthropic API returned an empty stream body.");
 
   const reader = response.body.getReader();
@@ -82,7 +87,7 @@ async function readStreamingResponse(response: Response, onTextDelta?: (text: st
           responseId = id;
         }, (reason) => {
           stopReason = reason;
-        }, onTextDelta);
+        }, onTextDelta, onToolInputDelta);
       }
       separatorIndex = buffer.indexOf("\n\n");
     }
@@ -96,7 +101,7 @@ async function readStreamingResponse(response: Response, onTextDelta?: (text: st
         responseId = id;
       }, (reason) => {
         stopReason = reason;
-      }, onTextDelta);
+      }, onTextDelta, onToolInputDelta);
     }
   }
 
@@ -126,6 +131,7 @@ function applyStreamEvent(
   setResponseId: (id: string) => void,
   setStopReason: (reason: string) => void,
   onTextDelta?: (text: string) => void,
+  onToolInputDelta?: (event: { bytes: number; tool?: string }) => void,
 ): void {
   if (event.type === "message_start") {
     const message = event.message as { id?: string } | undefined;
@@ -165,6 +171,7 @@ function applyStreamEvent(
     onTextDelta?.(delta.text);
   } else if (block.type === "tool_use" && delta.type === "input_json_delta" && delta.partial_json) {
     block.inputJson += delta.partial_json;
+    onToolInputDelta?.({ bytes: block.inputJson.length, tool: block.name || undefined });
   }
 }
 

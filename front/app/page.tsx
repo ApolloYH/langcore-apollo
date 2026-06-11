@@ -217,11 +217,92 @@ export default function Home() {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, isLoading]);
 
+  function appendLocalCommandResponse(commandLine: string, content: string) {
+    const now = Date.now();
+    const conversationId = activeConversationId ?? `conversation-${now}`;
+    const userMessage: Message = {
+      id: `user-command-${now}`,
+      content: commandLine,
+      role: "user"
+    };
+    const assistantMessage: Message = {
+      id: `assistant-command-${now}`,
+      content,
+      role: "assistant",
+      model: selectedModel,
+      streaming: false
+    };
+
+    setInput("");
+    setActiveConversationId(conversationId);
+    setMessages((current) => [...current, userMessage, assistantMessage]);
+  }
+
+  function runSlashCommand(commandLine: string) {
+    const normalized = commandLine.trim().replace(/\s+/g, " ").toLowerCase();
+
+    if (!normalized.startsWith("/")) {
+      return false;
+    }
+
+    if (normalized === "/clear") {
+      startNewChat();
+      return true;
+    }
+
+    if (normalized === "/yes") {
+      const nextAutoApprove = !autoApprove;
+      setAutoApprove(nextAutoApprove);
+      appendLocalCommandResponse(commandLine, nextAutoApprove ? "自动模式已开启。" : "自动模式已关闭。");
+      return true;
+    }
+
+    if (normalized === "/help") {
+      appendLocalCommandResponse(
+        commandLine,
+        `可用命令：\n\n${slashCommands.map((item) => `- \`${item.command}\`：${item.description}`).join("\n")}`
+      );
+      return true;
+    }
+
+    if (normalized === "/agents") {
+      appendLocalCommandResponse(commandLine, "多智能体和工具活动会显示在每条回复上方的 Thought / approval 事件中。");
+      return true;
+    }
+
+    if (normalized === "/skills") {
+      appendLocalCommandResponse(commandLine, "Skills 由后端 Agent 管理。要查看已安装 Skills，可以直接询问：列出已安装 Skills。");
+      return true;
+    }
+
+    if (normalized === "/stream") {
+      appendLocalCommandResponse(commandLine, "当前前端已默认使用流式输出。");
+      return true;
+    }
+
+    if (normalized === "/verbose") {
+      appendLocalCommandResponse(commandLine, "过程输出已默认显示为 Thought、approval 和工具事件。");
+      return true;
+    }
+
+    if (normalized === "/skill install" || normalized.startsWith("/skill install ")) {
+      appendLocalCommandResponse(commandLine, "用法：`/skill install <本地路径或 GitHub repo>`。当前前端暂未接入安装执行。");
+      return true;
+    }
+
+    appendLocalCommandResponse(commandLine, `未知命令：\`${commandLine}\`。输入 \`/help\` 查看可用命令。`);
+    return true;
+  }
+
   async function submitQuestion(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const question = input.trim();
 
     if (!question || isLoading) {
+      return;
+    }
+
+    if (runSlashCommand(question)) {
       return;
     }
 
@@ -699,6 +780,7 @@ function Composer(props: {
   variant: "dock" | "hero";
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [slashDismissed, setSlashDismissed] = useState(false);
   const [slashIndex, setSlashIndex] = useState(0);
   const slashQuery = props.input.startsWith("/") ? props.input.slice(1).trim().toLowerCase() : "";
   const visibleSlashCommands = props.input.startsWith("/")
@@ -707,11 +789,12 @@ function Composer(props: {
         return !slashQuery || haystack.includes(slashQuery);
       })
     : [];
-  const slashOpen = visibleSlashCommands.length > 0;
+  const slashOpen = !slashDismissed && visibleSlashCommands.length > 0;
   const activeSlashIndex = Math.min(slashIndex, Math.max(visibleSlashCommands.length - 1, 0));
 
   const applySlashCommand = (command: string) => {
     props.setInput(command);
+    setSlashDismissed(true);
     setSlashIndex(0);
   };
 
@@ -743,6 +826,7 @@ function Composer(props: {
         aria-label="输入问题"
         onChange={(event) => {
           props.setInput(event.target.value);
+          setSlashDismissed(false);
           setSlashIndex(0);
         }}
         onKeyDown={(event) => {
@@ -760,7 +844,7 @@ function Composer(props: {
 
           if (slashOpen && event.key === "Escape") {
             event.preventDefault();
-            props.setInput("");
+            setSlashDismissed(true);
             setSlashIndex(0);
             return;
           }
@@ -927,19 +1011,38 @@ function SyntheticThinkingEvent({ isStreaming }: { isStreaming: boolean }) {
 
 function ThoughtEvent({ thought }: { thought: ThoughtStep }) {
   const isActive = thought.status === "running" || thought.status === "waiting";
+  const detail = thought.detail.trim();
+  const displayTitle = isActive && thought.title.startsWith("思考中") ? "Thinking" : thought.title;
+  const showDots = isActive && thought.title.startsWith("思考中");
+
+  if (!detail) {
+    return (
+      <div className={`thought-event thought-event-${thought.status}`}>
+        <div className="thought-event-row">
+          <span className={`thought-dot thought-${thought.status}`} />
+          <span className="thought-event-title">
+            {displayTitle}
+            {showDots ? <span className="thinking-dots" /> : null}
+          </span>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <details className={`thought-event thought-event-${thought.status}`} open={isActive || Boolean(thought.detail)}>
-      <summary>
-        <span className="thought-caret">▸</span>
-        <span className={`thought-dot thought-${thought.status}`} />
-        <span className="thought-event-title">
-          {isActive && thought.title.startsWith("思考中") ? "Thinking" : thought.title}
-          {isActive && thought.title.startsWith("思考中") ? <span className="thinking-dots" /> : null}
-        </span>
-      </summary>
-      {thought.detail ? <div className="thought-event-subline">└ {thought.detail}</div> : null}
-    </details>
+    <div className={`thought-event thought-event-${thought.status}`}>
+      <details open={isActive || Boolean(detail)}>
+        <summary>
+          <span className="thought-caret">▸</span>
+          <span className={`thought-dot thought-${thought.status}`} />
+          <span className="thought-event-title">
+            {displayTitle}
+            {showDots ? <span className="thinking-dots" /> : null}
+          </span>
+        </summary>
+        <div className="thought-event-subline">└ {detail}</div>
+      </details>
+    </div>
   );
 }
 
@@ -1031,7 +1134,8 @@ type MarkdownBlock =
   | { type: "code"; content: string }
   | { type: "heading"; content: string; level: number }
   | { type: "list"; items: string[] }
-  | { type: "paragraph"; content: string };
+  | { type: "paragraph"; content: string }
+  | { alignments: Array<"center" | "left" | "right">; headers: string[]; rows: string[][]; type: "table" };
 
 function MarkdownContent({ content }: { content: string }) {
   const blocks = parseMarkdown(content);
@@ -1060,6 +1164,35 @@ function MarkdownContent({ content }: { content: string }) {
         if (block.type === "heading") {
           const HeadingTag = block.level <= 2 ? "h3" : "h4";
           return <HeadingTag className="markdown-heading" key={index}>{renderInlineMarkdown(block.content)}</HeadingTag>;
+        }
+
+        if (block.type === "table") {
+          return (
+            <div className="markdown-table-wrap" key={index}>
+              <table className="markdown-table">
+                <thead>
+                  <tr>
+                    {block.headers.map((header, cellIndex) => (
+                      <th className={`align-${block.alignments[cellIndex] ?? "left"}`} key={cellIndex}>
+                        {renderInlineMarkdown(header)}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {block.rows.map((row, rowIndex) => (
+                    <tr key={rowIndex}>
+                      {block.headers.map((_, cellIndex) => (
+                        <td className={`align-${block.alignments[cellIndex] ?? "left"}`} key={cellIndex}>
+                          {renderInlineMarkdown(row[cellIndex] ?? "")}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          );
         }
 
         return <p key={index}>{renderInlineMarkdown(block.content)}</p>;
@@ -1139,6 +1272,7 @@ function parseMarkdown(content: string): MarkdownBlock[] {
   let paragraph: string[] = [];
   let list: string[] = [];
   let code: string[] | null = null;
+  let table: string[] = [];
 
   const flushParagraph = () => {
     if (paragraph.length) {
@@ -1154,6 +1288,18 @@ function parseMarkdown(content: string): MarkdownBlock[] {
     }
   };
 
+  const flushTable = () => {
+    if (table.length) {
+      const parsed = parseMarkdownTable(table);
+      if (parsed) {
+        blocks.push(parsed);
+      } else {
+        blocks.push({ type: "paragraph", content: table.map((line) => line.trim()).join(" ") });
+      }
+      table = [];
+    }
+  };
+
   for (const line of lines) {
     if (line.trim().startsWith("```")) {
       if (code) {
@@ -1162,6 +1308,7 @@ function parseMarkdown(content: string): MarkdownBlock[] {
       } else {
         flushParagraph();
         flushList();
+        flushTable();
         code = [];
       }
       continue;
@@ -1175,6 +1322,7 @@ function parseMarkdown(content: string): MarkdownBlock[] {
     const listMatch = line.match(/^\s*[-*]\s+(.+)$/);
     if (listMatch?.[1]) {
       flushParagraph();
+      flushTable();
       list.push(listMatch[1]);
       continue;
     }
@@ -1183,22 +1331,33 @@ function parseMarkdown(content: string): MarkdownBlock[] {
     if (headingMatch?.[1] && headingMatch[2]) {
       flushParagraph();
       flushList();
+      flushTable();
       blocks.push({ type: "heading", level: headingMatch[1].length, content: headingMatch[2].trim() });
+      continue;
+    }
+
+    if (isMarkdownTableLine(line)) {
+      flushParagraph();
+      flushList();
+      table.push(line);
       continue;
     }
 
     if (!line.trim()) {
       flushParagraph();
       flushList();
+      flushTable();
       continue;
     }
 
     flushList();
+    flushTable();
     paragraph.push(line.trim());
   }
 
   flushParagraph();
   flushList();
+  flushTable();
 
   if (code) {
     blocks.push({ type: "code", content: code.join("\n") });
@@ -1207,9 +1366,51 @@ function parseMarkdown(content: string): MarkdownBlock[] {
   return blocks.length ? blocks : [{ type: "paragraph", content }];
 }
 
+function isMarkdownTableLine(line: string) {
+  const trimmed = line.trim();
+  return trimmed.startsWith("|") && trimmed.endsWith("|") && trimmed.slice(1, -1).includes("|");
+}
+
+function parseMarkdownTable(lines: string[]): Extract<MarkdownBlock, { type: "table" }> | null {
+  if (lines.length < 2 || !isMarkdownTableSeparator(lines[1] ?? "")) {
+    return null;
+  }
+
+  const headers = splitMarkdownTableRow(lines[0] ?? "");
+  const alignments = splitMarkdownTableRow(lines[1] ?? "").map(parseTableAlignment);
+  if (!headers.length || alignments.length < headers.length) {
+    return null;
+  }
+
+  const rows = lines.slice(2).map(splitMarkdownTableRow).filter((row) => row.some((cell) => cell.trim()));
+  return {
+    alignments,
+    headers,
+    rows,
+    type: "table"
+  };
+}
+
+function isMarkdownTableSeparator(line: string) {
+  const cells = splitMarkdownTableRow(line);
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
+}
+
+function parseTableAlignment(cell: string): "center" | "left" | "right" {
+  const trimmed = cell.trim();
+  if (trimmed.startsWith(":") && trimmed.endsWith(":")) return "center";
+  if (trimmed.endsWith(":")) return "right";
+  return "left";
+}
+
+function splitMarkdownTableRow(line: string) {
+  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  return trimmed.split("|").map((cell) => cell.trim());
+}
+
 function renderInlineMarkdown(text: string) {
   const nodes: ReactNode[] = [];
-  const pattern = /(`[^`]+`|\*\*[^*]+\*\*)/g;
+  const pattern = /(\[([^\]]+)\]\(([^)]+)\)|`[^`]+`|\*\*[^*]+\*\*)/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
@@ -1219,7 +1420,19 @@ function renderInlineMarkdown(text: string) {
     }
 
     const token = match[0];
-    if (token.startsWith("`")) {
+    if (token.startsWith("[")) {
+      const label = match[2] ?? "";
+      const href = match[3] ?? "";
+      nodes.push(
+        isSafeMarkdownHref(href) ? (
+          <a href={href} key={nodes.length} rel={href.startsWith("http") ? "noreferrer" : undefined} target={href.startsWith("http") ? "_blank" : undefined}>
+            {label}
+          </a>
+        ) : (
+          label
+        )
+      );
+    } else if (token.startsWith("`")) {
       nodes.push(<code key={nodes.length}>{token.slice(1, -1)}</code>);
     } else {
       nodes.push(<strong key={nodes.length}>{token.slice(2, -2)}</strong>);
@@ -1232,4 +1445,8 @@ function renderInlineMarkdown(text: string) {
   }
 
   return nodes;
+}
+
+function isSafeMarkdownHref(href: string) {
+  return href.startsWith("/") || href.startsWith("https://") || href.startsWith("http://");
 }

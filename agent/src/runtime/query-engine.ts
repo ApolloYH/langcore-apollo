@@ -43,8 +43,14 @@ export class QueryEngine {
       runWorker: (worker, workerTask, emit) => this.runWorker(worker, workerTask, emit),
     });
 
+    const [availableSkills, matchedSkills] = await Promise.all([
+      this.skillManager.metadata(),
+      this.matchedSkillsForPrompt(input),
+    ]);
     const prompt = new PromptBuilder({
       agentConfig: this.options.agentConfig,
+      availableSkills,
+      matchedSkills,
       tools: registry.definitions(),
       worker: this.options.worker,
     }).build();
@@ -65,12 +71,21 @@ export class QueryEngine {
         this.messages = this.contextManager.compact(this.messages);
         const stream = typeof this.options.stream === "function" ? this.options.stream() : this.options.stream;
         this.options.emit({ type: "llm_request", turn, toolCount: registry.definitions().length });
+        let lastToolDeltaAt = 0;
+        let lastToolDeltaBytes = 0;
         const response = await this.client.createMessage({
           system: prompt,
           messages: this.messages,
           tools: registry.definitions(),
           stream: stream ?? true,
           onTextDelta: (text) => this.options.emit({ type: "assistant_delta", text }),
+          onToolInputDelta: (event) => {
+            const now = Date.now();
+            if (now - lastToolDeltaAt < 1200 && event.bytes - lastToolDeltaBytes < 4000) return;
+            lastToolDeltaAt = now;
+            lastToolDeltaBytes = event.bytes;
+            this.options.emit({ type: "llm_tool_delta", ...event });
+          },
         });
         this.messages.push({ role: "assistant", content: response.content });
         finalText = messageText(response.content);
@@ -137,7 +152,7 @@ export class QueryEngine {
         await Promise.all(delegateJobs);
         this.messages.push({ role: "user", content: toolResults });
       }
-      return finalText || "Stopped: max turns reached without final text.";
+      return `Stopped: max turns reached before a final answer was completed.${finalText ? ` Last assistant text: ${finalText}` : ""}`;
     } finally {
       await this.mcpManager.closeAll();
     }
@@ -146,6 +161,27 @@ export class QueryEngine {
   clearConversation(): void {
     this.messages = [];
     this.contextManager.clear();
+  }
+
+  private async matchedSkillsForPrompt(input: string): Promise<Array<{ content: string; name: string; path: string }>> {
+    if (this.options.worker) return [];
+
+    const matches = (await this.skillManager.search(input)).slice(0, 2);
+    const loaded: Array<{ content: string; name: string; path: string }> = [];
+
+    for (const match of matches) {
+      try {
+        loaded.push({
+          content: await this.skillManager.read(match.path),
+          name: match.name,
+          path: match.path,
+        });
+      } catch {
+        // Ignore skills that disappeared between search and read.
+      }
+    }
+
+    return loaded;
   }
 
   private async runWorker(worker: WorkerConfig, task: string, emit: TraceSink): Promise<string> {

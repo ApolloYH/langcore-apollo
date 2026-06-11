@@ -78,7 +78,7 @@ def parse_include(values, include_issues, include_commits):
 def request_json(url):
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "repo-health-skill/repo-fetch",
+        "User-Agent": "tech-research-skill/repo-fetch",
         "X-GitHub-Api-Version": "2022-11-28",
     }
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
@@ -98,7 +98,10 @@ def request_json(url):
             message = parsed.get("message", body)
         except json.JSONDecodeError:
             pass
-        fail("github_http_error", "GitHub API request failed", {"url": url, "status": exc.code, "message": message})
+        details = {"url": url, "status": exc.code, "message": message}
+        if exc.code in {403, 429}:
+            details["hint"] = "GitHub API may be rate-limited. Set GITHUB_TOKEN or GH_TOKEN, or put GITHUB_TOKEN in this skill directory's ignored .env file."
+        fail("github_http_error", "GitHub API request failed", details)
     except urllib.error.URLError as exc:
         fail("network_error", "GitHub API request failed", {"url": url, "reason": str(exc.reason)})
     except json.JSONDecodeError as exc:

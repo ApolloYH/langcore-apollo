@@ -52,6 +52,42 @@ def bullet_lines(items, formatter):
     return [f"- {formatter(item)}" for item in items]
 
 
+def evidence_source_lines(payload):
+    sources = payload.get("evidence_sources") or {}
+    lines = ["", "## Evidence Sources", ""]
+    has_sources = False
+
+    query = sources.get("github_search_query")
+    if query:
+        lines.append(f"- GitHub search query: `{query}`")
+        has_sources = True
+
+    for repo in sources.get("repositories") or []:
+        if not isinstance(repo, dict):
+            continue
+        name = repo.get("name") or "GitHub repository"
+        url = repo.get("url")
+        lines.append(f"- GitHub repository: {name}" + (f" - {url}" if url else ""))
+        has_sources = True
+
+    for page in sources.get("web_pages") or []:
+        if not isinstance(page, dict):
+            continue
+        title = page.get("title") or page.get("url") or "Web page"
+        url = page.get("url")
+        lines.append(f"- Web page: {title}" + (f" - {url}" if url else ""))
+        has_sources = True
+
+    if not has_sources:
+        repo = payload.get("input", {}).get("repository_full_name")
+        if repo and not repo.startswith("github search:"):
+            lines.append(f"- GitHub repository: {repo} - https://github.com/{repo}")
+        else:
+            lines.append("- None captured in the input payload.")
+
+    return lines
+
+
 def render_daily_markdown(payload, analysis):
     repo = payload.get("input", {}).get("repository_full_name") or "unknown repository"
     lines = [
@@ -71,6 +107,7 @@ def render_daily_markdown(payload, analysis):
     lines.extend(bullet_lines(analysis.get("signals", []), lambda x: f"**{x.get('name', 'signal')}** ({x.get('status', 'unknown')}): {x.get('detail', '')}"))
     lines.extend(["", "## Actions", ""])
     lines.extend(bullet_lines(analysis.get("recommendations", []), lambda x: f"[{x.get('priority', 'unknown')}] {x.get('action', '')} - {x.get('reason', '')}"))
+    lines.extend(evidence_source_lines(payload))
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -95,6 +132,7 @@ def render_weekly_markdown(payload, analysis):
     lines.extend(bullet_lines(analysis.get("risks", []), lambda x: f"[{x.get('severity', 'unknown')}] {x.get('title', '')} - {x.get('detail', '')}"))
     lines.extend(["", "## Recommended Next Steps", ""])
     lines.extend(bullet_lines(analysis.get("recommendations", []), lambda x: f"[{x.get('priority', 'unknown')}] {x.get('action', '')} - {x.get('reason', '')}"))
+    lines.extend(evidence_source_lines(payload))
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -120,6 +158,7 @@ def render_investment_markdown(payload, analysis):
     lines.extend(bullet_lines(analysis.get("risks", []), lambda x: f"[{x.get('severity', 'unknown')}] {x.get('title', '')} - {x.get('detail', '')}"))
     lines.extend(["", "## Diligence Questions", ""])
     lines.extend(bullet_lines(notes.get("diligence_questions", []), lambda x: str(x)))
+    lines.extend(evidence_source_lines(payload))
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -213,4 +252,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

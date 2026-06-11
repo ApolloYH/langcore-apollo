@@ -95,6 +95,12 @@ export class CliTraceRenderer {
         this.thoughtStartedAt = Date.now();
         this.startStatus("thinking");
         break;
+      case "llm_tool_delta":
+        if (this.statusText !== "thinking") {
+          this.startStatus("thinking");
+        }
+        this.statusDetail = `preparing ${event.tool ?? "tool"} input (${formatBytes(event.bytes)})`;
+        break;
       case "llm_response":
         if (this.statusText === "thinking") {
           this.statusDetail = thoughtDetail(event.stopReason);
@@ -337,6 +343,11 @@ function typewriterFrame(text: string, frame: number): string {
   const visible = frame % cycle;
   if (visible <= text.length) return text.slice(0, visible || 1);
   return text;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  return `${(bytes / 1024).toFixed(1)} KB`;
 }
 
 function formatStatusText(text: string): string {

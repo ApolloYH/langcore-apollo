@@ -1,0 +1,435 @@
+#!/usr/bin/env python3
+import argparse
+import datetime as dt
+import json
+import math
+import sys
+
+VERSION = "1.1.0"
+MODEL = "local-heuristic-v1"
+
+
+def now_iso():
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def fail(code, message, details=None, exit_code=1):
+    payload = {
+        "ok": False,
+        "error": {
+            "code": code,
+            "message": message,
+            "details": details or {},
+        },
+    }
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True), file=sys.stderr)
+    raise SystemExit(exit_code)
+
+
+def read_stdin_json(max_bytes):
+    raw = sys.stdin.buffer.read(max_bytes + 1)
+    if not raw:
+        fail("invalid_input", "stdin is empty")
+    if len(raw) > max_bytes:
+        fail("invalid_input", "stdin exceeds --max-input-bytes", {"max_input_bytes": max_bytes})
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except UnicodeDecodeError as exc:
+        fail("invalid_input", "stdin must be UTF-8", {"error": str(exc)})
+    except json.JSONDecodeError as exc:
+        fail("invalid_json", "stdin must be valid JSON", {"error": str(exc)})
+
+
+def validate_fetch_payload(payload):
+    if not isinstance(payload, dict):
+        fail("invalid_input", "input JSON must be an object")
+    if payload.get("ok") is not True or payload.get("source") != "repo-fetch":
+        fail("invalid_input", "input must be successful repo-fetch output")
+    mode = payload.get("mode", "repository")
+    if mode == "repository" and not isinstance(payload.get("repository"), dict):
+        fail("invalid_input", "repository input missing repository object")
+    if mode == "search" and not isinstance(payload.get("search"), dict):
+        fail("invalid_input", "search input missing search object")
+    if mode not in {"repository", "search"}:
+        fail("invalid_input", "unsupported repo-fetch mode", {"mode": mode})
+
+
+def parse_time(value):
+    if not value or not isinstance(value, str):
+        return None
+    normalized = value.replace("Z", "+00:00")
+    try:
+        parsed = dt.datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def days_since(value):
+    parsed = parse_time(value)
+    if parsed is None:
+        return None
+    return max(0, (dt.datetime.now(dt.timezone.utc) - parsed).days)
+
+
+def clamp(value, minimum=0, maximum=100):
+    return max(minimum, min(maximum, int(round(value))))
+
+
+def count_recent(items, key, max_days):
+    count = 0
+    for item in items or []:
+        if isinstance(item, dict):
+            age = days_since(item.get(key))
+            if age is not None and age <= max_days:
+                count += 1
+    return count
+
+
+def stars_points(stars):
+    stars = stars or 0
+    if stars <= 0:
+        return 0
+    return min(22, math.log10(stars + 1) * 6)
+
+
+def forks_points(forks):
+    forks = forks or 0
+    if forks <= 0:
+        return 0
+    return min(10, math.log10(forks + 1) * 4)
+
+
+def recency_status(age_days):
+    if age_days is None:
+        return "watch", "no pushed_at timestamp was captured"
+    if age_days <= 30:
+        return "good", f"last push was {age_days} days ago"
+    if age_days <= 180:
+        return "watch", f"last push was {age_days} days ago"
+    return "poor", f"last push was {age_days} days ago"
+
+
+def score_repository(repo, data):
+    stars = repo.get("stargazers_count") or 0
+    forks = repo.get("forks_count") or 0
+    open_issues = repo.get("open_issues_count") or 0
+    push_age = days_since(repo.get("pushed_at"))
+    commits = data.get("commits") if isinstance(data, dict) else []
+    issues = data.get("issues") if isinstance(data, dict) else []
+
+    score = 38
+    score += stars_points(stars)
+    score += forks_points(forks)
+
+    if push_age is None:
+        score -= 2
+    elif push_age <= 30:
+        score += 18
+    elif push_age <= 90:
+        score += 12
+    elif push_age <= 180:
+        score += 6
+    elif push_age <= 365:
+        score -= 4
+    else:
+        score -= 14
+
+    if commits:
+        recent_commits = count_recent(commits, "date", 90)
+        score += min(10, len(commits) / 3)
+        if recent_commits:
+            score += min(8, recent_commits * 2)
+        else:
+            score -= 4
+
+    if issues:
+        recently_updated_issues = count_recent(issues, "updated_at", 90)
+        score += min(6, recently_updated_issues)
+
+    if repo.get("archived"):
+        score -= 35
+    if repo.get("disabled"):
+        score -= 25
+    if not repo.get("license"):
+        score -= 5
+    if stars >= 1000 and forks >= 100:
+        score += 5
+    if open_issues > max(200, stars * 0.12):
+        score -= 5
+
+    return clamp(score)
+
+
+def investment_fit(score, risks):
+    high_risks = sum(1 for risk in risks if risk.get("severity") == "high")
+    if score >= 80 and high_risks == 0:
+        return "strong"
+    if score >= 65:
+        return "promising"
+    if score >= 45:
+        return "watchlist"
+    return "avoid"
+
+
+def analyze_repository(fetch_payload):
+    repo = fetch_payload.get("repository") or {}
+    data = fetch_payload.get("data") or {}
+    issues = data.get("issues") or []
+    commits = data.get("commits") or []
+    name = repo.get("full_name") or repo.get("html_url") or "unknown repository"
+    stars = repo.get("stargazers_count") or 0
+    forks = repo.get("forks_count") or 0
+    open_issues = repo.get("open_issues_count") or 0
+    push_age = days_since(repo.get("pushed_at"))
+    activity_status, activity_detail = recency_status(push_age)
+    recent_commits = count_recent(commits, "date", 90)
+    updated_issues = count_recent(issues, "updated_at", 90)
+
+    signals = [
+        {
+            "name": "activity",
+            "status": activity_status,
+            "detail": activity_detail
+            + (f"; {recent_commits} captured commits in the last 90 days" if commits else "; commit dataset was not captured"),
+        },
+        {
+            "name": "community",
+            "status": "good" if stars >= 1000 else "watch" if stars >= 100 else "poor",
+            "detail": f"{stars} stars, {forks} forks, {open_issues} open issues",
+        },
+        {
+            "name": "maintenance",
+            "status": "poor" if repo.get("archived") or repo.get("disabled") else "good" if updated_issues or recent_commits else "watch",
+            "detail": f"archived={bool(repo.get('archived'))}, disabled={bool(repo.get('disabled'))}, license={repo.get('license') or 'not captured'}",
+        },
+        {
+            "name": "risk",
+            "status": "poor" if repo.get("archived") or repo.get("disabled") else "watch" if not repo.get("license") else "good",
+            "detail": "primary risk flags are based on archive/disabled/license metadata and captured issue activity",
+        },
+        {
+            "name": "momentum",
+            "status": "good" if (push_age is not None and push_age <= 30 and stars >= 100) else "watch" if push_age is not None and push_age <= 180 else "poor",
+            "detail": f"recent issue updates captured: {updated_issues}; recent commits captured: {recent_commits}",
+        },
+    ]
+
+    risks = []
+    if repo.get("archived"):
+        risks.append({"severity": "high", "title": "Repository is archived", "detail": "GitHub metadata marks the repository as archived."})
+    if repo.get("disabled"):
+        risks.append({"severity": "high", "title": "Repository is disabled", "detail": "GitHub metadata marks the repository as disabled."})
+    if push_age is None:
+        risks.append({"severity": "medium", "title": "Missing activity timestamp", "detail": "No pushed_at value was captured."})
+    elif push_age > 365:
+        risks.append({"severity": "high", "title": "Long inactivity window", "detail": f"Last push was {push_age} days ago."})
+    elif push_age > 180:
+        risks.append({"severity": "medium", "title": "Activity is slowing", "detail": f"Last push was {push_age} days ago."})
+    if not repo.get("license"):
+        risks.append({"severity": "medium", "title": "License not captured", "detail": "The repository metadata did not include an SPDX license."})
+    if not commits:
+        risks.append({"severity": "low", "title": "No commit sample", "detail": "Run repo-fetch with --include commits for stronger activity evidence."})
+    if not issues:
+        risks.append({"severity": "low", "title": "No issue sample", "detail": "Run repo-fetch with --include issues for stronger maintenance evidence."})
+    if not risks:
+        risks.append({"severity": "low", "title": "No major metadata risk", "detail": "No high-risk flags were found in the captured GitHub metadata."})
+
+    score = score_repository(repo, data)
+    fit = investment_fit(score, risks)
+    summary = (
+        f"{name} has {stars} stars and {forks} forks. "
+        f"Captured metadata indicates {activity_detail}; optional datasets include "
+        f"{', '.join(sorted(data.keys())) if data else 'repository metadata only'}. "
+        "This local score is a deterministic signal summary, not a final strategic judgment."
+    )
+
+    recommendations = [
+        {
+            "priority": "high" if score < 60 else "medium",
+            "action": "Review maintainers, releases, and recent pull requests before relying on the project.",
+            "reason": "The local analyzer only sees repository metadata plus optional issue/commit samples.",
+        },
+        {
+            "priority": "medium",
+            "action": "Compare implementation approach against adjacent repositories in the same topic.",
+            "reason": "Relative positioning is more useful than a standalone repository score.",
+        },
+    ]
+    if not commits or not issues:
+        recommendations.append(
+            {
+                "priority": "medium",
+                "action": "Fetch issues and commits for a stronger health read.",
+                "reason": "Missing optional datasets reduce confidence in maintenance and momentum signals.",
+            }
+        )
+
+    return {
+        "health_score": score,
+        "summary": summary,
+        "signals": signals,
+        "risks": risks,
+        "recommendations": recommendations,
+        "investment_notes": {
+            "fit": fit,
+            "rationale": f"Local repository health score is {score}/100. The agent should combine this with market, competitor, and product evidence before making a final call.",
+            "diligence_questions": [
+                "Are maintainers still shipping releases or accepting pull requests?",
+                "Do users report production adoption, benchmarks, or deployment constraints?",
+                "What commercial or open-source alternatives solve the same job better?",
+            ],
+        },
+    }
+
+
+def analyze_search(fetch_payload):
+    search = fetch_payload.get("search") or {}
+    items = [item for item in search.get("items") or [] if isinstance(item, dict)]
+    query = search.get("query") or "unknown query"
+    total_count = search.get("total_count") or 0
+    top_items = items[:5]
+    top_stars = max([(item.get("stargazers_count") or 0) for item in items] or [0])
+    recent_count = sum(1 for item in items if (days_since(item.get("pushed_at")) or 999999) <= 180)
+
+    score = 35
+    score += min(20, math.log10(total_count + 1) * 5 if total_count else 0)
+    score += min(25, math.log10(top_stars + 1) * 6 if top_stars else 0)
+    score += min(20, recent_count * 3)
+    if search.get("incomplete_results"):
+        score -= 5
+    score = clamp(score)
+
+    leaders = ", ".join(
+        f"{item.get('full_name')} ({item.get('stargazers_count') or 0} stars)"
+        for item in top_items
+        if item.get("full_name")
+    )
+    if not leaders:
+        leaders = "no repositories captured"
+
+    risks = [
+        {
+            "severity": "medium",
+            "title": "Search result only",
+            "detail": "Search payloads do not include issue or commit samples; fetch representative repositories before final judgment.",
+        }
+    ]
+    if search.get("incomplete_results"):
+        risks.append({"severity": "medium", "title": "Incomplete GitHub search", "detail": "GitHub marked the search result as incomplete."})
+    if not items:
+        risks.append({"severity": "high", "title": "No repositories captured", "detail": "The search query did not return usable repository items."})
+
+    return {
+        "health_score": score,
+        "summary": f"GitHub search `{query}` returned {total_count} total matches. Leading captured repositories: {leaders}. This is a local landscape signal, not a final market analysis.",
+        "signals": [
+            {
+                "name": "community",
+                "status": "good" if top_stars >= 1000 else "watch" if top_stars >= 100 else "poor",
+                "detail": f"top captured repository has {top_stars} stars",
+            },
+            {
+                "name": "activity",
+                "status": "good" if recent_count >= 5 else "watch" if recent_count else "poor",
+                "detail": f"{recent_count} captured repositories were pushed within the last 180 days",
+            },
+            {
+                "name": "momentum",
+                "status": "good" if score >= 70 else "watch" if score >= 45 else "poor",
+                "detail": f"search-level local score is {score}/100 across {len(items)} captured repositories",
+            },
+        ],
+        "risks": risks,
+        "recommendations": [
+            {
+                "priority": "high",
+                "action": "Fetch 3-5 representative repositories with issues and commits.",
+                "reason": "Repository details are required for evidence-backed health and implementation analysis.",
+            },
+            {
+                "priority": "medium",
+                "action": "Use multiple adjacent keyword searches before choosing competitors.",
+                "reason": "One GitHub query can miss projects that use different positioning language.",
+            },
+        ],
+        "investment_notes": {
+            "fit": investment_fit(score, risks),
+            "rationale": f"The search landscape score is {score}/100 based on captured repository count, top stars, and recency. The agent should synthesize final potential and competitor analysis.",
+            "diligence_questions": [
+                "Which captured repositories represent production-ready infrastructure versus demos?",
+                "Which projects are substitutes, complements, or direct competitors?",
+                "Are commercial vendors creating adoption that open-source projects can leverage?",
+            ],
+        },
+    }
+
+
+def build_evidence_sources(fetch_payload):
+    repositories = []
+    repo = fetch_payload.get("repository") or {}
+    if repo.get("full_name") or repo.get("html_url"):
+        repositories.append(
+            {
+                "name": repo.get("full_name") or repo.get("html_url"),
+                "url": repo.get("html_url"),
+            }
+        )
+
+    search = fetch_payload.get("search") or {}
+    for item in search.get("items") or []:
+        if isinstance(item, dict) and (item.get("full_name") or item.get("html_url")):
+            repositories.append(
+                {
+                    "name": item.get("full_name") or item.get("html_url"),
+                    "url": item.get("html_url"),
+                }
+            )
+
+    return {
+        "github_search_query": search.get("query"),
+        "repositories": repositories,
+        "web_pages": [],
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Summarize repo-fetch JSON with local deterministic heuristics. No LLM or API credentials are used.")
+    parser.add_argument("--max-input-bytes", type=int, default=200000, help="Maximum stdin size. Default: 200000.")
+    args = parser.parse_args()
+
+    if args.max_input_bytes < 1:
+        fail("invalid_arguments", "--max-input-bytes must be at least 1", {"max_input_bytes": args.max_input_bytes})
+
+    fetch_payload = read_stdin_json(args.max_input_bytes)
+    validate_fetch_payload(fetch_payload)
+
+    mode = fetch_payload.get("mode", "repository")
+    analysis = analyze_search(fetch_payload) if mode == "search" else analyze_repository(fetch_payload)
+
+    repo = fetch_payload.get("repository", {})
+    search = fetch_payload.get("search", {})
+    subject = repo.get("full_name") or f"github search: {search.get('query')}"
+    payload = {
+        "ok": True,
+        "source": "repo-analyze",
+        "version": VERSION,
+        "analyzed_at": now_iso(),
+        "model": MODEL,
+        "provider": "local-deterministic",
+        "input": {
+            "repository_full_name": subject,
+            "mode": mode,
+            "fetched_at": fetch_payload.get("fetched_at"),
+            "included": sorted((fetch_payload.get("data") or {}).keys()),
+        },
+        "evidence_sources": build_evidence_sources(fetch_payload),
+        "analysis": analysis,
+    }
+    print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

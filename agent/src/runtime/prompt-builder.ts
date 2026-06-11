@@ -3,6 +3,8 @@ import { ToolPolicy } from "./tool-policy.js";
 
 type PromptBuilderOptions = {
   agentConfig: AgentConfig;
+  availableSkills?: Array<{ description: string; name: string; path: string }>;
+  matchedSkills?: Array<{ content: string; name: string; path: string }>;
   tools: AnthropicTool[];
   worker?: WorkerConfig;
 };
@@ -19,6 +21,8 @@ export class PromptBuilder {
       policy.buildActionsSection(),
       policy.buildSystemSection(),
       policy.buildDelegationSection(this.options.agentConfig.workers),
+      this.availableSkillsSection(),
+      this.loadedSkillsSection(),
       this.environmentSection(),
       this.toneSection(),
     ].filter((sectionText) => sectionText.trim().length > 0);
@@ -70,6 +74,39 @@ You can answer questions, inspect and edit the local workspace, run shell comman
 - Permission mode: ${config.permissions.mode}
 - Max turns per submitted message: ${config.maxTurns}
 - Available tools: ${toolNames}`;
+  }
+
+  private availableSkillsSection(): string {
+    const availableSkills = this.options.availableSkills ?? [];
+    if (!availableSkills.length) return "";
+
+    const lines = availableSkills.map(
+      (skill) => `- ${skill.name}: ${skill.description || "No description."} Path: ${skill.path}`,
+    );
+
+    return `# Available Skills
+These local skill metadata entries are injected into the system prompt every turn. Use the descriptions to decide when a skill applies. When a skill applies and its full instructions are not already loaded below, call skill_read with that skill path before doing the task. Do not call skill_search just to discover available skills.
+
+${lines.join("\n")}`;
+  }
+
+  private loadedSkillsSection(): string {
+    const matchedSkills = this.options.matchedSkills ?? [];
+    if (!matchedSkills.length) return "";
+
+    const blocks = matchedSkills
+      .map(
+        (skill) => `## ${skill.name}
+Path: ${skill.path}
+
+${skill.content}`,
+      )
+      .join("\n\n");
+
+    return `# Loaded Skill Instructions
+The following local skills matched the user's request and are already loaded for this turn. Follow their instructions when applicable. If a loaded skill directly matches the task, use it instead of improvising a generic workflow.
+
+${blocks}`;
   }
 
   private toneSection(): string {

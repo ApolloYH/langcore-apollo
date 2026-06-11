@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { createApprovalRequest } from "./approvals";
 
@@ -15,6 +16,7 @@ type AgentTraceEvent =
   | { type: "llm_request"; turn: number; toolCount: number }
   | { type: "llm_response"; turn: number; stopReason?: string; text?: string }
   | { type: "assistant_delta"; text: string }
+  | { type: "llm_tool_delta"; bytes: number; tool?: string }
   | { type: "tool_call"; tool: string; input: JsonObject; risk: "low" | "medium" | "high" }
   | { type: "tool_result"; tool: string; isError?: boolean; content: string }
   | { type: "approval_required"; tool: string; risk: "low" | "medium" | "high"; reason: string }
@@ -197,7 +199,12 @@ export async function POST(request: Request) {
           },
         });
 
-        const content = await engine.submitMessage(message);
+        let content = await engine.submitMessage(message);
+        const reportLinks = await recentReportLinks(turnStartedAt, content);
+        if (reportLinks) {
+          content = `${content.trimEnd()}\n\n${reportLinks}`;
+          send({ type: "delta", text: `\n\n${reportLinks}` });
+        }
         send({
           type: "thought",
           thought: {
@@ -232,6 +239,13 @@ function traceToThought(event: Exclude<AgentTraceEvent, { type: "assistant_delta
     case "llm_request":
     case "llm_response":
       return null;
+    case "llm_tool_delta":
+      return {
+        id,
+        title: `准备工具输入 ${event.tool ?? "tool"}`,
+        detail: `已生成 ${formatBytes(event.bytes)} 参数`,
+        status: "running",
+      };
     case "tool_call":
       return {
         id,
@@ -308,6 +322,11 @@ function elapsedSince(startedAt: number) {
   return `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
 }
 
+function formatBytes(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  return `${(bytes / 1024).toFixed(1)} KB`;
+}
+
 function thoughtDetail(stopReason?: string) {
   if (stopReason === "tool_use") return "model requested tool use";
   if (stopReason === "max_tokens") return "model reached max token limit";
@@ -325,8 +344,58 @@ function compactDelegateInput(input: ApprovalRequest["input"]) {
   };
 }
 
+async function recentReportLinks(since: number, content: string) {
+  const docsDirs = [
+    path.resolve(process.cwd(), "..", "docs"),
+    path.resolve(process.cwd(), "..", "agent", "docs"),
+  ];
+
+  const reports: Array<{ filename: string; mtimeMs: number }> = [];
+  const seen = new Set<string>();
+
+  for (const docsDir of docsDirs) {
+    let entries: string[] = [];
+    try {
+      entries = await fs.readdir(docsDir);
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (seen.has(entry) || !/^[a-zA-Z0-9._-]+\.md$/.test(entry)) {
+        continue;
+      }
+
+      try {
+        const stat = await fs.stat(path.join(docsDir, entry));
+        if (stat.isFile() && stat.mtimeMs >= since - 1000 && !content.includes(`/api/reports/download?file=${entry}`)) {
+          seen.add(entry);
+          reports.push({ filename: entry, mtimeMs: stat.mtimeMs });
+        }
+      } catch {
+        // Ignore files that disappear during the scan.
+      }
+    }
+  }
+
+  if (!reports.length) {
+    return "";
+  }
+
+  reports.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const links = reports.slice(0, 3).flatMap(({ filename }) => [
+    `[下载 Markdown](/api/reports/download?file=${encodeURIComponent(filename)}&format=md)`,
+    `[下载 PDF](/api/reports/download?file=${encodeURIComponent(filename)}&format=pdf)`,
+  ]);
+
+  return ["报告下载：", ...links].join("\n");
+}
+
 async function importRuntimeModule<T>(filePath: string): Promise<T> {
-  const specifier = JSON.stringify(pathToFileURL(filePath).href);
+  const stat = await fs.stat(filePath);
+  const url = pathToFileURL(filePath);
+  url.searchParams.set("mtime", String(Math.trunc(stat.mtimeMs)));
+  const specifier = JSON.stringify(url.href);
   return (0, eval)(`import(${specifier})`) as Promise<T>;
 }
 

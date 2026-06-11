@@ -32,6 +32,7 @@ export type TraceEvent =
   | { type: "llm_request"; turn: number; toolCount: number }
   | { type: "llm_response"; turn: number; stopReason?: string; text?: string }
   | { type: "assistant_delta"; text: string }
+  | { type: "llm_tool_delta"; bytes: number; tool?: string }
   | { type: "tool_call"; tool: string; input: JsonObject; risk: ToolRisk }
   | { type: "tool_result"; tool: string; isError?: boolean; content: string }
   | { type: "approval_required"; tool: string; risk: ToolRisk; reason: string }

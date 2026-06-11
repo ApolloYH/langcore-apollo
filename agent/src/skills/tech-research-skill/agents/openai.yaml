@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tech Research"
+  short_description: "Research tech directions, repos, competitors, and trends"
+  default_prompt: "Use $tech-research-skill to research a technology direction or GitHub repository and produce an evidence-backed report."
