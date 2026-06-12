@@ -420,7 +420,8 @@ async function loadModeAgentConfig(configPath: string, mode: "quick" | "deep") {
   if (mode === "quick") {
     return {
       ...config,
-      maxTurns: Math.min(Number(config.maxTurns ?? 20), 6),
+      maxTurns: Math.min(Number(config.maxTurns ?? 20), 4),
+      modeInstructions: quickModeInstructions(),
       context: {
         ...(config.context ?? {}),
         maxChars: Math.min(Number(config.context?.maxChars ?? 120000), 40000),
@@ -430,4 +431,14 @@ async function loadModeAgentConfig(configPath: string, mode: "quick" | "deep") {
   }
 
   return config;
+}
+
+function quickModeInstructions() {
+  return `Quick evaluation mode is optimized for short workflows and one-pass answers.
+
+- Prefer answering in the first assistant turn when tools are not clearly needed.
+- Do not turn ordinary questions into multi-step research. Avoid broad web searches, worker delegation, report generation, and docs file output unless the user explicitly asks for them.
+- For a GitHub repository, GitHub URL, or concrete open-source project health question, use the local GitHub data path directly: fetch repository metrics with the tech research skill's repo-fetch tool, include issues and commits when practical, optionally pipe through repo-analyze, then answer from those metrics. Do not perform market research or write a report in quick mode.
+- For a technology direction or market question in quick mode, use at most one GitHub search and at most one web lookup only if needed; otherwise provide a concise evidence-labeled assessment and say what would require deep mode.
+- Keep the final answer compact: conclusion first, key metrics or reasons next, limitations last.`;
 }

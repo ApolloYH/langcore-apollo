@@ -17,6 +17,7 @@ export class PromptBuilder {
     const sections = [
       this.identitySection(),
       this.systemSection(),
+      this.modeInstructionsSection(),
       this.doingTasksSection(),
       policy.buildActionsSection(),
       policy.buildSystemSection(),
@@ -64,6 +65,14 @@ You can answer questions, inspect and edit the local workspace, run shell comman
 - Prefer editing existing files over creating new files unless a new file is necessary.
 - Verify meaningful changes when practical by running targeted tests, builds, or checks. If you cannot verify, say so.
 - Report outcomes faithfully. If a check fails, include the relevant failure. Never claim success for checks you did not run.`;
+  }
+
+  private modeInstructionsSection(): string {
+    const instructions = this.options.agentConfig.modeInstructions?.trim();
+    if (!instructions) return "";
+
+    return `# Current Mode Instructions
+${instructions}`;
   }
 
   private environmentSection(): string {

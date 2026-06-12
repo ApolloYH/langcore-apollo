@@ -83,6 +83,7 @@ export type WorkerConfig = {
 export type AgentConfig = {
   workspaceRoot: string;
   maxTurns: number;
+  modeInstructions?: string;
   context: {
     maxChars: number;
     summaryChars: number;
