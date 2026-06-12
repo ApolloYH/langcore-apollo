@@ -5,12 +5,16 @@ import {
   Check,
   ChevronDown,
   Clock3,
+  ExternalLink,
+  GitFork,
+  Github,
   LogIn,
   MessageCirclePlus,
   PanelLeft,
   Plus,
   Send,
   ShieldCheck,
+  Star,
   Trash2,
   UserRound
 } from "lucide-react";
@@ -89,6 +93,45 @@ type SlashCommand = {
   description: string;
 };
 
+type AppView = "chat" | "github";
+
+type GitHubRepoCard = {
+  defaultBranch: string;
+  description: string | null;
+  forks: number;
+  fullName: string;
+  htmlUrl: string;
+  id: number;
+  language: string | null;
+  license: string | null;
+  name: string;
+  openIssues: number;
+  owner: string;
+  pushedAt: string | null;
+  stars: number;
+  topics: string[];
+  updatedAt: string;
+  watchers: number;
+};
+
+type GitHubLookupResponse =
+  | { kind: "repo"; repository: GitHubRepoCard }
+  | {
+      kind: "user";
+      repositories: GitHubRepoCard[];
+      user: GitHubUserSummary;
+    };
+
+type GitHubUserSummary = {
+  avatarUrl: string;
+  followers: number;
+  following: number;
+  htmlUrl: string;
+  login: string;
+  name: string | null;
+  publicRepos: number;
+};
+
 const fallbackModels: AgentModel[] = [
   { id: "langcore-agent", name: "LangCore Agent", provider: "langcore" },
   { id: "kimi-k2-agent", name: "Kimi K2.6 Agent", provider: "kimi" },
@@ -113,12 +156,20 @@ const slashCommands: SlashCommand[] = [
 ];
 
 const conversationsStorageKey = "langcore-conversations-v1";
+const githubCardsStorageKey = "langcore-github-cards-v1";
 
 export default function Home() {
   const [input, setInput] = useState("");
   const [autoApprove, setAutoApprove] = useState(false);
   const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [activeView, setActiveView] = useState<AppView>("chat");
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [githubCards, setGithubCards] = useState<GitHubRepoCard[]>([]);
+  const [githubError, setGithubError] = useState("");
+  const [githubInput, setGithubInput] = useState("");
+  const [githubLoading, setGithubLoading] = useState(false);
+  const [githubToken, setGithubToken] = useState("");
+  const [githubUserSummary, setGithubUserSummary] = useState<GitHubUserSummary | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [models, setModels] = useState<AgentModel[]>(fallbackModels);
@@ -191,6 +242,25 @@ export default function Home() {
 
     setHistoryLoaded(true);
   }, []);
+
+  useEffect(() => {
+    const storedCards = window.localStorage.getItem(githubCardsStorageKey);
+
+    if (!storedCards) {
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(storedCards) as GitHubRepoCard[];
+      setGithubCards(Array.isArray(parsed) ? parsed : []);
+    } catch {
+      setGithubCards([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(githubCardsStorageKey, JSON.stringify(githubCards));
+  }, [githubCards]);
 
   useEffect(() => {
     if (!historyLoaded || !activeConversationId || messages.length === 0) {
@@ -296,7 +366,11 @@ export default function Home() {
 
   async function submitQuestion(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const question = input.trim();
+    await sendQuestion(input);
+  }
+
+  async function sendQuestion(rawQuestion: string) {
+    const question = rawQuestion.trim();
 
     if (!question || isLoading) {
       return;
@@ -326,6 +400,7 @@ export default function Home() {
 
     setInput("");
     setIsLoading(true);
+    setActiveView("chat");
     setActiveConversationId(conversationId);
     setMessages((current) => [...current, userMessage, assistantMessage]);
 
@@ -443,10 +518,63 @@ export default function Home() {
     }
   }
 
+  async function lookupGithubTarget(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const target = githubInput.trim();
+
+    if (!target || githubLoading) {
+      return;
+    }
+
+    setGithubLoading(true);
+    setGithubError("");
+
+    try {
+      const response = await fetch("/api/github/lookup", {
+        body: JSON.stringify({ input: target, token: githubToken.trim() || undefined }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST"
+      });
+      const payload = (await response.json().catch(() => ({}))) as GitHubLookupResponse | { error?: string };
+
+      if (!response.ok) {
+        throw new Error(("error" in payload && payload.error) || "GitHub 查询失败");
+      }
+
+      if ("kind" in payload && payload.kind === "repo") {
+        setGithubCards((current) => mergeGithubCards(current, [payload.repository]));
+        setGithubUserSummary(null);
+      } else if ("kind" in payload && payload.kind === "user") {
+        setGithubCards((current) => mergeGithubCards(current, payload.repositories));
+        setGithubUserSummary(payload.user ?? null);
+      }
+    } catch (error) {
+      setGithubError(error instanceof Error ? error.message : "GitHub 查询失败");
+    } finally {
+      setGithubLoading(false);
+    }
+  }
+
+  function removeGithubCard(fullName: string) {
+    setGithubCards((current) => current.filter((card) => card.fullName !== fullName));
+  }
+
+  async function analyzeGithubCard(card: GitHubRepoCard) {
+    const prompt = [
+      `快速评估 GitHub 项目 ${card.fullName}。`,
+      `仓库 URL：${card.htmlUrl}`,
+      "请直接获取该仓库的 stars、forks、issues、最近提交、license、README 信号等指标，分析项目健康度、风险、适用场景和是否值得继续投入。",
+      "输出要简洁，最后附上使用到的证据来源。"
+    ].join("\n");
+
+    await sendQuestion(prompt);
+  }
+
   function startNewChat() {
     if (isLoading) {
       return;
     }
+    setActiveView("chat");
     setActiveConversationId(null);
     setMessages([]);
     setInput("");
@@ -458,6 +586,7 @@ export default function Home() {
     }
 
     setActiveConversationId(conversation.id);
+    setActiveView("chat");
     setMessages(conversation.messages.map((message) => ({ ...message, streaming: false })));
     setInput("");
   }
@@ -549,7 +678,7 @@ export default function Home() {
     setAuthError("");
   }
 
-  const hasConversation = messages.length > 0 || isLoading;
+  const hasConversation = activeView === "chat" && (messages.length > 0 || isLoading);
 
   return (
     <main className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
@@ -587,6 +716,16 @@ export default function Home() {
           <MessageCirclePlus size={20} />
           <span>新建对话</span>
           <kbd>⌘ K</kbd>
+        </button>
+
+        <button
+          className={`github-entry ${activeView === "github" ? "active" : ""}`}
+          disabled={isLoading}
+          type="button"
+          onClick={() => setActiveView("github")}
+        >
+          <Github size={20} />
+          <span>GitHub 项目</span>
         </button>
 
         <nav className="sidebar-nav" aria-label="历史记录">
@@ -703,8 +842,26 @@ export default function Home() {
         </div>
       ) : null}
 
-      <section className={`workspace ${hasConversation ? "workspace-chat" : "workspace-home"}`}>
-        {hasConversation ? (
+      <section
+        className={`workspace ${
+          activeView === "github" ? "workspace-github" : hasConversation ? "workspace-chat" : "workspace-home"
+        }`}
+      >
+        {activeView === "github" ? (
+          <GitHubWorkspace
+            cards={githubCards}
+            error={githubError}
+            input={githubInput}
+            isLoading={githubLoading}
+            onAnalyze={analyzeGithubCard}
+            onInputChange={setGithubInput}
+            onRemove={removeGithubCard}
+            onSubmit={lookupGithubTarget}
+            onTokenChange={setGithubToken}
+            token={githubToken}
+            userSummary={githubUserSummary}
+          />
+        ) : hasConversation ? (
           <>
             <header className="chat-header">
               <div>
@@ -764,6 +921,165 @@ export default function Home() {
         )}
       </section>
     </main>
+  );
+}
+
+function GitHubWorkspace(props: {
+  cards: GitHubRepoCard[];
+  error: string;
+  input: string;
+  isLoading: boolean;
+  onAnalyze: (card: GitHubRepoCard) => void;
+  onInputChange: (value: string) => void;
+  onRemove: (fullName: string) => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onTokenChange: (value: string) => void;
+  token: string;
+  userSummary: GitHubUserSummary | null;
+}) {
+  return (
+    <>
+      <header className="github-header">
+        <div>
+          <h1>GitHub 项目</h1>
+          <p>输入仓库 URL、owner/repo 或 GitHub 用户名，快速整理项目指标并发起 LangCore 分析。</p>
+        </div>
+      </header>
+
+      <div className="github-scroll">
+        <div className="github-content">
+          <form className="github-search" onSubmit={props.onSubmit}>
+            <label className="github-field">
+              <span>GitHub URL / 用户名</span>
+              <input
+                onChange={(event) => props.onInputChange(event.target.value)}
+                placeholder="https://github.com/vercel/next.js 或 torvalds"
+                value={props.input}
+              />
+            </label>
+            <label className="github-field github-token-field">
+              <span>GitHub Token</span>
+              <input
+                autoComplete="off"
+                onChange={(event) => props.onTokenChange(event.target.value)}
+                placeholder="可选，用于提高 API 限额"
+                type="password"
+                value={props.token}
+              />
+            </label>
+            <button className="github-search-button" disabled={!props.input.trim() || props.isLoading} type="submit">
+              <Github size={17} />
+              <span>{props.isLoading ? "查询中" : "获取"}</span>
+            </button>
+          </form>
+
+          <div className="github-token-note">Token 只用于本次浏览器会话的 GitHub API 请求，不会保存到本地卡片。</div>
+
+          {props.error ? <div className="github-error">{props.error}</div> : null}
+
+          {props.userSummary ? (
+            <section className="github-user-summary">
+              <img alt="" src={props.userSummary.avatarUrl} />
+              <div>
+                <div className="github-user-title">{props.userSummary.name ?? props.userSummary.login}</div>
+                <div className="github-user-meta">
+                  @{props.userSummary.login} · {formatNumber(props.userSummary.publicRepos)} repos ·{" "}
+                  {formatNumber(props.userSummary.followers)} followers · 已导入最近 starred 项目
+                </div>
+              </div>
+              <a href={props.userSummary.htmlUrl} rel="noreferrer" target="_blank" aria-label="打开 GitHub 用户主页">
+                <ExternalLink size={16} />
+              </a>
+            </section>
+          ) : null}
+
+          <section className="github-section-head">
+            <div>
+              <h2>项目卡片</h2>
+              <p>{props.cards.length ? `已保存 ${props.cards.length} 个项目` : "添加仓库或用户名后会在这里生成卡片"}</p>
+            </div>
+          </section>
+
+          {props.cards.length ? (
+            <div className="github-card-grid">
+              {props.cards.map((card) => (
+                <GitHubProjectCard card={card} key={card.fullName} onAnalyze={props.onAnalyze} onRemove={props.onRemove} />
+              ))}
+            </div>
+          ) : (
+            <div className="github-empty">
+              <Github size={28} />
+              <span>暂无项目。输入一个 GitHub 仓库或用户名开始。</span>
+            </div>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+function GitHubProjectCard({
+  card,
+  onAnalyze,
+  onRemove
+}: {
+  card: GitHubRepoCard;
+  onAnalyze: (card: GitHubRepoCard) => void;
+  onRemove: (fullName: string) => void;
+}) {
+  return (
+    <article className="github-card">
+      <div className="github-card-top">
+        <div className="github-repo-name">
+          <Github size={18} />
+          <a href={card.htmlUrl} rel="noreferrer" target="_blank">
+            {card.fullName}
+          </a>
+        </div>
+        <button className="github-card-delete" type="button" onClick={() => onRemove(card.fullName)} aria-label="删除卡片">
+          <Trash2 size={15} />
+        </button>
+      </div>
+
+      <p className="github-description">{card.description || "这个仓库暂无描述。"}</p>
+
+      <div className="github-metrics" aria-label={`${card.fullName} 指标`}>
+        <span>
+          <Star size={15} />
+          {formatNumber(card.stars)}
+        </span>
+        <span>
+          <GitFork size={15} />
+          {formatNumber(card.forks)}
+        </span>
+        <span>{formatNumber(card.openIssues)} issues</span>
+      </div>
+
+      <div className="github-meta-row">
+        <span>{card.language ?? "Unknown"}</span>
+        <span>{card.license ?? "No license"}</span>
+        <span>更新 {formatDate(card.pushedAt ?? card.updatedAt)}</span>
+      </div>
+
+      {card.topics.length ? (
+        <div className="github-topics">
+          {card.topics.slice(0, 4).map((topic) => (
+            <span key={topic}>{topic}</span>
+          ))}
+        </div>
+      ) : null}
+
+      <div className="github-card-actions">
+        <button className="github-analyze" type="button" onClick={() => onAnalyze(card)}>
+          <BrainCircuit size={16} />
+          <span>LangCore 分析</span>
+        </button>
+        <a className="github-open" href={card.htmlUrl} rel="noreferrer" target="_blank">
+          <ExternalLink size={15} />
+          <span>打开</span>
+        </a>
+      </div>
+    </article>
   );
 }
 
@@ -1128,6 +1444,37 @@ function shouldShowThought(thought: ThoughtStep) {
   }
 
   return true;
+}
+
+function mergeGithubCards(current: GitHubRepoCard[], incoming: GitHubRepoCard[]) {
+  const next = new Map(current.map((card) => [card.fullName, card]));
+
+  for (const card of incoming) {
+    next.set(card.fullName, card);
+  }
+
+  return Array.from(next.values()).sort((a, b) => b.stars - a.stars);
+}
+
+function formatNumber(value: number) {
+  return new Intl.NumberFormat("en", { maximumFractionDigits: 1, notation: "compact" }).format(value);
+}
+
+function formatDate(value: string | null) {
+  if (!value) {
+    return "未知";
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "未知";
+  }
+
+  return date.toLocaleDateString("zh-CN", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric"
+  });
 }
 
 type MarkdownBlock =
