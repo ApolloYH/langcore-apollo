@@ -281,7 +281,7 @@ Example:
 ```json
 {
   "name": "LangCore",
-  "path": "/Users/apollo/Code-YH/langcore/front"
+  "path": "/Users/apollo/Code-YH/langcore-apollo/front"
 }
 ```
 
