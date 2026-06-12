@@ -16,6 +16,46 @@ postgres://langcore:langcore_password@localhost:5432/langcore
 
 The app reads `DATABASE_URL` when present.
 
+## Drizzle Migrations
+
+The database schema is defined in TypeScript at:
+
+```text
+db/schema.ts
+```
+
+Drizzle Kit generates SQL migrations into:
+
+```text
+drizzle/
+```
+
+Useful commands:
+
+```bash
+npm run db:generate
+npm run db:migrate
+```
+
+`db:generate` reads `db/schema.ts` and writes a new SQL migration.
+`db:migrate` applies pending migrations to the PostgreSQL database configured by `DATABASE_URL`.
+
+For a fresh database, run:
+
+```bash
+npm run db:migrate
+```
+
+If the database was already initialized by the older `lib/db.ts` runtime `CREATE TABLE IF NOT EXISTS` path, the initial Drizzle migration will fail because the tables already exist. For local development, reset the Docker volume or use a fresh database before applying the initial migration. For a production database that already has these tables, create a migration baseline instead of replaying `0000_overconfident_firedrake.sql`.
+
+The initial migration enables `pgvector` explicitly:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+This is required before creating the `embedding vector(1536)` column and HNSW index.
+
 ## Core Tables
 
 ### `users`
