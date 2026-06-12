@@ -5,17 +5,22 @@ import {
   Check,
   ChevronDown,
   Clock3,
+  Database,
   ExternalLink,
+  FileText,
   GitFork,
   Github,
+  Link2,
   LogIn,
   MessageCirclePlus,
   PanelLeft,
   Plus,
+  Search,
   Send,
   ShieldCheck,
   Star,
   Trash2,
+  UploadCloud,
   UserRound
 } from "lucide-react";
 import { FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
@@ -93,7 +98,7 @@ type SlashCommand = {
   description: string;
 };
 
-type AppView = "chat" | "github";
+type AppView = "chat" | "github" | "rag";
 
 type GitHubRepoCard = {
   defaultBranch: string;
@@ -131,6 +136,50 @@ type GitHubUserSummary = {
   name: string | null;
   publicRepos: number;
 };
+
+type RagIngestResponse = {
+  chunksStored: number;
+  codeChunks: number;
+  githubChunks: number;
+  hackerNewsChunks: number;
+  owner: string;
+  repo: string;
+  repositoryUrl: string;
+};
+
+type RagPdfIngestResponse = {
+  chunksStored: number;
+  filePath: string;
+  owner: string;
+  pages: number | null;
+  repo: string;
+  title: string;
+};
+
+type RagSourceType = "github_repo" | "github_readme" | "github_file" | "hacker_news" | "local_pdf";
+
+type RagSearchResponse = {
+  answer: string;
+  citations: Array<{
+    sourceType: RagSourceType;
+    sourceUrl: string | null;
+    title: string;
+  }>;
+  results: Array<{
+    chunkIndex: number;
+    content: string;
+    id: string;
+    score: number;
+    sourceType: RagSourceType;
+    sourceUrl: string | null;
+    title: string;
+    vectorScore?: number;
+    keywordScore?: number;
+  }>;
+  rewrittenQuery: string;
+};
+
+type RagAction = "github.ingest" | "document.ingestPdf" | "semantic.search";
 
 const fallbackModels: AgentModel[] = [
   { id: "langcore-agent", name: "LangCore Agent", provider: "langcore" },
@@ -186,6 +235,17 @@ export default function Home() {
   const [workspace, setWorkspace] = useState<WorkspaceInfo>({ name: "LangCore", path: "" });
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [ragActiveSource, setRagActiveSource] = useState<"github" | "pdf">("github");
+  const [ragError, setRagError] = useState("");
+  const [ragGithubUrl, setRagGithubUrl] = useState("https://github.com/ApolloYH/EchoCore");
+  const [ragIngest, setRagIngest] = useState<RagIngestResponse | null>(null);
+  const [ragLoadingAction, setRagLoadingAction] = useState<"github" | "pdf" | "search" | null>(null);
+  const [ragOwner, setRagOwner] = useState("ApolloYH");
+  const [ragPdfIngest, setRagPdfIngest] = useState<RagPdfIngestResponse | null>(null);
+  const [ragPdfPath, setRagPdfPath] = useState("/Users/apollo/YH/杨豪-202234070916-毕业论文.pdf");
+  const [ragQuery, setRagQuery] = useState("这个项目的核心功能、架构设计和潜在风险是什么？");
+  const [ragRepo, setRagRepo] = useState("EchoCore");
+  const [ragSearch, setRagSearch] = useState<RagSearchResponse | null>(null);
   const endRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -570,6 +630,93 @@ export default function Home() {
     await sendQuestion(prompt);
   }
 
+  async function ingestRagGithub(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!ragGithubUrl.trim() || ragLoadingAction) {
+      return;
+    }
+
+    setRagLoadingAction("github");
+    setRagError("");
+
+    try {
+      const data = await postRag<RagIngestResponse>("github.ingest", {
+        force: false,
+        githubUrl: ragGithubUrl.trim(),
+        maxHnDiscussions: 5
+      });
+
+      setRagActiveSource("github");
+      setRagIngest(data);
+      setRagOwner(data.owner);
+      setRagRepo(data.repo);
+      setRagSearch(null);
+      setRagQuery("这个项目的核心功能、架构设计和潜在风险是什么？");
+    } catch (error) {
+      setRagError(ragErrorMessage(error));
+    } finally {
+      setRagLoadingAction(null);
+    }
+  }
+
+  async function ingestRagPdf(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!ragPdfPath.trim() || ragLoadingAction) {
+      return;
+    }
+
+    setRagLoadingAction("pdf");
+    setRagError("");
+
+    try {
+      const data = await postRag<RagPdfIngestResponse>("document.ingestPdf", {
+        filePath: ragPdfPath.trim(),
+        owner: "local",
+        repo: "thesis"
+      });
+
+      setRagActiveSource("pdf");
+      setRagPdfIngest(data);
+      setRagOwner(data.owner);
+      setRagRepo(data.repo);
+      setRagSearch(null);
+      setRagQuery("这篇论文的研究主题、方法、系统设计和结论是什么？");
+    } catch (error) {
+      setRagError(ragErrorMessage(error));
+    } finally {
+      setRagLoadingAction(null);
+    }
+  }
+
+  async function searchRag(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!ragQuery.trim() || ragLoadingAction) {
+      return;
+    }
+
+    setRagLoadingAction("search");
+    setRagError("");
+
+    try {
+      const data = await postRag<RagSearchResponse>("semantic.search", {
+        limit: 5,
+        minSimilarity: 0,
+        owner: ragOwner.trim() || undefined,
+        query: ragQuery.trim(),
+        repo: ragRepo.trim() || undefined
+      });
+
+      setRagSearch(data);
+    } catch (error) {
+      setRagError(ragErrorMessage(error));
+    } finally {
+      setRagLoadingAction(null);
+    }
+  }
+
   function startNewChat() {
     if (isLoading) {
       return;
@@ -719,13 +866,23 @@ export default function Home() {
         </button>
 
         <button
-          className={`github-entry ${activeView === "github" ? "active" : ""}`}
+          className={`sidebar-app-entry ${activeView === "github" ? "active" : ""}`}
           disabled={isLoading}
           type="button"
           onClick={() => setActiveView("github")}
         >
           <Github size={20} />
           <span>GitHub 项目</span>
+        </button>
+
+        <button
+          className={`sidebar-app-entry ${activeView === "rag" ? "active" : ""}`}
+          disabled={isLoading}
+          type="button"
+          onClick={() => setActiveView("rag")}
+        >
+          <Database size={20} />
+          <span>语义检索</span>
         </button>
 
         <nav className="sidebar-nav" aria-label="历史记录">
@@ -844,7 +1001,11 @@ export default function Home() {
 
       <section
         className={`workspace ${
-          activeView === "github" ? "workspace-github" : hasConversation ? "workspace-chat" : "workspace-home"
+          activeView === "github" || activeView === "rag"
+            ? "workspace-tool"
+            : hasConversation
+              ? "workspace-chat"
+              : "workspace-home"
         }`}
       >
         {activeView === "github" ? (
@@ -860,6 +1021,31 @@ export default function Home() {
             onTokenChange={setGithubToken}
             token={githubToken}
             userSummary={githubUserSummary}
+          />
+        ) : activeView === "rag" ? (
+          <RagWorkspace
+            activeSource={ragActiveSource}
+            error={ragError}
+            githubIngest={ragIngest}
+            githubUrl={ragGithubUrl}
+            loadingAction={ragLoadingAction}
+            onGithubSubmit={ingestRagGithub}
+            onGithubUrlChange={(value) => {
+              setRagGithubUrl(value);
+              setRagActiveSource("github");
+            }}
+            onOwnerChange={setRagOwner}
+            onPdfPathChange={setRagPdfPath}
+            onPdfSubmit={ingestRagPdf}
+            onQueryChange={setRagQuery}
+            onRepoChange={setRagRepo}
+            onSearchSubmit={searchRag}
+            owner={ragOwner}
+            pdfIngest={ragPdfIngest}
+            pdfPath={ragPdfPath}
+            query={ragQuery}
+            repo={ragRepo}
+            search={ragSearch}
           />
         ) : hasConversation ? (
           <>
@@ -1080,6 +1266,233 @@ function GitHubProjectCard({
         </a>
       </div>
     </article>
+  );
+}
+
+function RagWorkspace(props: {
+  activeSource: "github" | "pdf";
+  error: string;
+  githubIngest: RagIngestResponse | null;
+  githubUrl: string;
+  loadingAction: "github" | "pdf" | "search" | null;
+  onGithubSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onGithubUrlChange: (value: string) => void;
+  onOwnerChange: (value: string) => void;
+  onPdfPathChange: (value: string) => void;
+  onPdfSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onQueryChange: (value: string) => void;
+  onRepoChange: (value: string) => void;
+  onSearchSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  owner: string;
+  pdfIngest: RagPdfIngestResponse | null;
+  pdfPath: string;
+  query: string;
+  repo: string;
+  search: RagSearchResponse | null;
+}) {
+  return (
+    <>
+      <header className="tool-header">
+        <div>
+          <h1>语义检索</h1>
+          <p>接入本地 RAG API，采集 GitHub / PDF 语料并用 pgvector 做检索增强问答。</p>
+        </div>
+      </header>
+
+      <div className="tool-scroll">
+        <div className="rag-content">
+          <section className="rag-source-grid">
+            <form className={`rag-panel ${props.activeSource === "github" ? "active" : ""}`} onSubmit={props.onGithubSubmit}>
+              <div className="rag-panel-title">
+                <UploadCloud size={17} />
+                <span>采集 GitHub 语料</span>
+              </div>
+              <label className="tool-field">
+                <span>GitHub 地址</span>
+                <input
+                  onChange={(event) => props.onGithubUrlChange(event.target.value)}
+                  placeholder="https://github.com/ApolloYH/EchoCore"
+                  value={props.githubUrl}
+                />
+              </label>
+              <button
+                className="tool-primary-button"
+                disabled={!props.githubUrl.trim() || props.loadingAction !== null}
+                type="submit"
+              >
+                <UploadCloud size={16} />
+                <span>{props.loadingAction === "github" ? "采集中" : "采集 / 切换 GitHub"}</span>
+              </button>
+              {props.githubIngest ? (
+                <div className="rag-metric-grid">
+                  <RagMetric label="总块数" value={props.githubIngest.chunksStored} />
+                  <RagMetric label="概览" value={props.githubIngest.githubChunks} />
+                  <RagMetric label="代码" value={props.githubIngest.codeChunks} />
+                  <RagMetric label="HN" value={props.githubIngest.hackerNewsChunks} />
+                </div>
+              ) : (
+                <div className="rag-panel-note">GitHub 地址不变时，后端会复用已有 pgvector 语料。</div>
+              )}
+            </form>
+
+            <form className={`rag-panel ${props.activeSource === "pdf" ? "active" : ""}`} onSubmit={props.onPdfSubmit}>
+              <div className="rag-panel-title">
+                <FileText size={17} />
+                <span>采集本地 PDF</span>
+              </div>
+              <label className="tool-field">
+                <span>PDF 路径</span>
+                <input
+                  onChange={(event) => props.onPdfPathChange(event.target.value)}
+                  placeholder="/Users/apollo/Documents/report.pdf"
+                  value={props.pdfPath}
+                />
+              </label>
+              <button className="tool-secondary-button" disabled={!props.pdfPath.trim() || props.loadingAction !== null} type="submit">
+                <UploadCloud size={16} />
+                <span>{props.loadingAction === "pdf" ? "采集中" : "采集 PDF"}</span>
+              </button>
+              {props.pdfIngest ? (
+                <div className="rag-pdf-summary">
+                  <div>{props.pdfIngest.title}</div>
+                  <span>
+                    {props.pdfIngest.chunksStored} 个文本块 · {props.pdfIngest.pages ?? 0} 页 · {props.pdfIngest.owner}/
+                    {props.pdfIngest.repo}
+                  </span>
+                </div>
+              ) : (
+                <div className="rag-panel-note">PDF 会写入 local/thesis 语料，也可以在下方手动改 owner/repo。</div>
+              )}
+            </form>
+          </section>
+
+          <form className="rag-search-panel" onSubmit={props.onSearchSubmit}>
+            <div className="rag-search-head">
+              <div>
+                <h2>RAG 提问</h2>
+                <p>
+                  当前语料：{props.owner || "-"} / {props.repo || "-"}
+                </p>
+              </div>
+              <button className="tool-primary-button" disabled={!props.query.trim() || props.loadingAction !== null} type="submit">
+                <Search size={16} />
+                <span>{props.loadingAction === "search" ? "检索中" : "检索并回答"}</span>
+              </button>
+            </div>
+
+            <div className="rag-corpus-row">
+              <label className="tool-field">
+                <span>Owner</span>
+                <input onChange={(event) => props.onOwnerChange(event.target.value)} value={props.owner} />
+              </label>
+              <label className="tool-field">
+                <span>Repo / Corpus</span>
+                <input onChange={(event) => props.onRepoChange(event.target.value)} value={props.repo} />
+              </label>
+            </div>
+
+            <label className="tool-field">
+              <span>问题</span>
+              <textarea onChange={(event) => props.onQueryChange(event.target.value)} rows={4} value={props.query} />
+            </label>
+          </form>
+
+          {props.error ? (
+            <div className="tool-error">
+              {props.error}
+              <br />
+              默认服务地址：http://127.0.0.1:4000。也可以通过 DEVSCOPE_API_URL 或 RAG_API_URL 指定。
+            </div>
+          ) : null}
+
+          {props.search ? <RagSearchResult search={props.search} /> : null}
+        </div>
+      </div>
+    </>
+  );
+}
+
+function RagMetric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rag-metric">
+      <strong>{value}</strong>
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function RagSearchResult({ search }: { search: RagSearchResponse }) {
+  return (
+    <div className="rag-result-grid">
+      <section className="rag-result-section">
+        <div className="rag-result-label">Query Rewriting</div>
+        <p className="rag-rewritten-query">{search.rewrittenQuery}</p>
+      </section>
+
+      <section className="rag-result-section">
+        <div className="rag-result-label">LLM 综合回答</div>
+        <div className="rag-answer">{search.answer}</div>
+      </section>
+
+      {search.citations.length ? (
+        <section className="rag-result-section">
+          <div className="rag-result-label">引用来源</div>
+          <div className="rag-citation-grid">
+            {search.citations.map((citation) => (
+              <RagCitation citation={citation} key={`${citation.title}:${citation.sourceUrl ?? ""}`} />
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      <section className="rag-result-section">
+        <div className="rag-result-label">检索到的文本块</div>
+        <div className="rag-chunk-grid">
+          {search.results.map((result) => (
+            <article className="rag-chunk" key={result.id}>
+              <div className="rag-chunk-head">
+                <strong>{result.title}</strong>
+                <span>
+                  {formatRagSourceType(result.sourceType)} · 综合 {formatScore(result.score)}
+                </span>
+              </div>
+              <div className="rag-chunk-meta">
+                <span>Chunk #{result.chunkIndex}</span>
+                <span>向量 {formatScore(result.vectorScore)}</span>
+                <span>关键词 {formatScore(result.keywordScore)}</span>
+              </div>
+              <pre>{result.content}</pre>
+              {result.sourceUrl ? (
+                <a href={result.sourceUrl} rel="noreferrer" target="_blank">
+                  <ExternalLink size={14} />
+                  <span>打开来源</span>
+                </a>
+              ) : null}
+            </article>
+          ))}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function RagCitation({ citation }: { citation: RagSearchResponse["citations"][number] }) {
+  const content = (
+    <>
+      <Link2 size={15} />
+      <span>{citation.title}</span>
+      <em>{formatRagSourceType(citation.sourceType)}</em>
+    </>
+  );
+
+  if (!citation.sourceUrl) {
+    return <div className="rag-citation">{content}</div>;
+  }
+
+  return (
+    <a className="rag-citation" href={citation.sourceUrl} rel="noreferrer" target="_blank">
+      {content}
+    </a>
   );
 }
 
@@ -1475,6 +1888,41 @@ function formatDate(value: string | null) {
     month: "2-digit",
     year: "numeric"
   });
+}
+
+async function postRag<T>(action: RagAction, input: Record<string, unknown>): Promise<T> {
+  const response = await fetch("/api/rag", {
+    body: JSON.stringify({ action, input }),
+    headers: { "Content-Type": "application/json" },
+    method: "POST"
+  });
+  const payload = (await response.json().catch(() => ({}))) as { data?: T; error?: string };
+
+  if (!response.ok) {
+    throw new Error(payload.error || "RAG 服务暂时不可用。");
+  }
+
+  return payload.data as T;
+}
+
+function ragErrorMessage(error: unknown) {
+  return error instanceof Error && error.message ? error.message : "RAG 服务暂时不可用。";
+}
+
+function formatRagSourceType(sourceType: RagSourceType) {
+  const labels: Record<RagSourceType, string> = {
+    github_file: "GitHub 文件",
+    github_readme: "README",
+    github_repo: "GitHub 元数据",
+    hacker_news: "Hacker News",
+    local_pdf: "PDF"
+  };
+
+  return labels[sourceType];
+}
+
+function formatScore(score: number | undefined) {
+  return typeof score === "number" ? score.toFixed(3) : "-";
 }
 
 type MarkdownBlock =

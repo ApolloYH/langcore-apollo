@@ -20,6 +20,7 @@ type BuiltinOptions = {
 export function createBuiltinRegistry(options: BuiltinOptions): ToolRegistry {
   const registry = new ToolRegistry();
   const { config, skillManager, mcpManager } = options;
+  let lastWriteFilePath: string | undefined;
 
   registry.register({
     name: "list_files",
@@ -76,11 +77,15 @@ export function createBuiltinRegistry(options: BuiltinOptions): ToolRegistry {
       required: ["path", "content"],
     },
     execute: async (input, context) => {
-      const targetPath = requiredString(input, "path");
+      const providedPath = stringInput(input, "path", "");
+      const targetPath = providedPath || lastWriteFilePath;
+      if (!targetPath) throw new Error("Missing string input: path");
       const fullPath = await resolvePathWithBoundaryApproval(config, context, targetPath, "write file");
       await fs.mkdir(path.dirname(fullPath), { recursive: true });
       await fs.writeFile(fullPath, requiredString(input, "content"), "utf8");
-      return { content: `Wrote ${path.relative(config.workspaceRoot, fullPath)}` };
+      lastWriteFilePath = targetPath;
+      const reusedPathNote = providedPath ? "" : " (reused previous write_file path)";
+      return { content: `Wrote ${path.relative(config.workspaceRoot, fullPath)}${reusedPathNote}` };
     },
   });
 

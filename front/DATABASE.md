@@ -151,6 +151,26 @@ Important columns:
 - `metadata_json`
 - `created_at`
 
+### `rag_embeddings`
+
+Stores the integrated RAG workspace vectors in the same PostgreSQL / pgvector database.
+
+This table is used by `rag/apps/api` and is intentionally separate from `repo_embeddings` because the RAG pipeline uses the local `Xenova/paraphrase-multilingual-MiniLM-L12-v2` model with `vector(384)`, while `repo_embeddings` is reserved for the main app's `vector(1536)` schema.
+
+Important columns:
+
+- `id`
+- `owner`
+- `repo`
+- `source_type`
+- `source_url`
+- `title`
+- `chunk_index`
+- `content`
+- `metadata`
+- `embedding vector(384)`
+- `created_at`
+
 ## Embedding Storage
 
 Embeddings are stored in two forms:

@@ -63,6 +63,7 @@ You can answer questions, inspect and edit the local workspace, run shell comman
 - For code or workspace tasks, read relevant files before proposing or making changes.
 - Keep changes scoped to what the user asked. Do not add speculative features, broad refactors, or unnecessary abstractions.
 - Prefer editing existing files over creating new files unless a new file is necessary.
+- When calling tools, include every required input field every time. For write_file, always include both path and content even when rewriting the same file.
 - Verify meaningful changes when practical by running targeted tests, builds, or checks. If you cannot verify, say so.
 - Report outcomes faithfully. If a check fails, include the relevant failure. Never claim success for checks you did not run.`;
   }

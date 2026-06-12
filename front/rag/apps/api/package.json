@@ -1,0 +1,30 @@
+{
+  "name": "@devscope/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/server.ts",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@devscope/ai": "file:../../packages/ai",
+    "@devscope/db": "file:../../packages/db",
+    "@devscope/shared": "file:../../packages/shared",
+    "@fastify/cors": "^11.1.0",
+    "@octokit/rest": "^22.0.1",
+    "@trpc/server": "^11.17.0",
+    "dotenv": "^17.4.2",
+    "fastify": "^5.6.2",
+    "pdf-parse": "^2.4.5",
+    "tsx": "^4.21.0",
+    "undici": "^8.4.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}
