@@ -34,7 +34,16 @@ export async function GET(request: Request) {
     });
   }
 
-  const pdf = await markdownToPdf(markdown, filename);
+  let pdf: Buffer;
+  try {
+    pdf = await markdownToPdf(markdown, filename);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return new Response(`PDF export requires a Chromium browser runtime. Markdown download is still available. ${detail}`, {
+      status: 501
+    });
+  }
+
   return new Response(new Uint8Array(pdf), {
     headers: {
       "content-disposition": `attachment; filename="${filename.replace(/\.md$/i, ".pdf")}"`,
@@ -80,7 +89,11 @@ async function findReportPath(filename: string) {
 
 async function markdownToPdf(markdown: string, filename: string) {
   const { chromium } = await import("playwright");
-  const browser = await chromium.launch({ headless: true });
+  const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
+  const browser = await chromium.launch({
+    headless: true,
+    ...(executablePath ? { executablePath } : {})
+  });
   try {
     const page = await browser.newPage();
     await page.setContent(markdownToHtml(markdown, filename), { waitUntil: "load" });

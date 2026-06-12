@@ -1,0 +1,78 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: langcore-apollo-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: langcore
+      POSTGRES_USER: langcore
+      POSTGRES_PASSWORD: langcore_password
+    volumes:
+      - langcore-apollo-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langcore -d langcore"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  rag-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: rag-api
+    container_name: langcore-apollo-rag-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - path: ./agent/.env
+        required: false
+      - path: ./front/.env
+        required: false
+      - path: ./front/.env.local
+        required: false
+    environment:
+      DATABASE_URL: postgres://langcore:langcore_password@postgres:5432/langcore
+      HOST: 0.0.0.0
+      PORT: 4000
+      TRANSFORMERS_REMOTE_HOST: ${TRANSFORMERS_REMOTE_HOST:-https://hf-mirror.com}
+    ports:
+      - "${RAG_PORT:-4000}:4000"
+    volumes:
+      - langcore-apollo-transformers-cache:/root/.cache
+
+  front:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: front
+    container_name: langcore-apollo-front
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rag-api:
+        condition: service_started
+    env_file:
+      - path: ./agent/.env
+        required: false
+      - path: ./front/.env
+        required: false
+      - path: ./front/.env.local
+        required: false
+    environment:
+      DATABASE_URL: postgres://langcore:langcore_password@postgres:5432/langcore
+      DEVSCOPE_API_URL: http://rag-api:4000
+      RAG_API_URL: http://rag-api:4000
+      NEXT_PUBLIC_RAG_API_URL: http://localhost:${RAG_PORT:-4000}
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+    ports:
+      - "${FRONT_PORT:-3000}:3000"
+    volumes:
+      - ./docs:/app/docs
+
+volumes:
+  langcore-apollo-postgres-data:
+  langcore-apollo-transformers-cache:
